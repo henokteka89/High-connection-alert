@@ -1,0 +1,66 @@
+-- Step 1: Declare variables
+DECLARE @DatabaseName NVARCHAR(128);
+DECLARE @SQL NVARCHAR(MAX);
+DECLARE @ConnectionCount INT;
+DECLARE @EmailSubject NVARCHAR(255);
+DECLARE @EmailBody NVARCHAR(MAX);
+DECLARE @ThresholdLow INT = 0;
+DECLARE @ThresholdHigh INT = 250;
+
+-- Step 2: Declare a cursor to loop through all databases
+DECLARE db_cursor CURSOR FOR
+SELECT name 
+FROM sys.databases
+WHERE state_desc = 'ONLINE';  -- Check only online databases
+
+-- Step 3: Open the cursor and start the loop
+OPEN db_cursor
+FETCH NEXT FROM db_cursor INTO @DatabaseName
+
+WHILE @@FETCH_STATUS = 0
+BEGIN
+    -- Step 4: Dynamically construct SQL to get the connection count for each database
+    SET @SQL = N'SELECT @ConnectionCount = COUNT(*) 
+                 FROM [' + @DatabaseName + '].sys.dm_exec_sessions 
+                 WHERE database_id = DB_ID(''' + @DatabaseName + ''') 
+                 AND status IN (''sleeping'', ''running'');';
+    
+    -- Execute the dynamic SQL and get the connection count
+    EXEC sp_executesql @SQL, N'@ConnectionCount INT OUTPUT', @ConnectionCount = @ConnectionCount OUTPUT;
+
+    -- Step 5: Check for multiple conditions
+    -- Condition 1: Connection count is 0
+    IF @ConnectionCount = @ThresholdLow
+    BEGIN
+        SET @EmailSubject = 'Connection Alert: No Connections in ' + @DatabaseName;
+        SET @EmailBody = 'The database ' + @DatabaseName + ' has no active connections (0 connections). Immediate attention may be required.';
+
+        -- Send email (assumes Database Mail is configured)
+        EXEC msdb.dbo.sp_send_dbmail
+            @profile_name = 'YourMailProfile',  -- Replace with your Database Mail profile name
+            @recipients = 'youremail@example.com',  -- Replace with your email address
+            @subject = @EmailSubject,
+            @body = @EmailBody;
+    END
+
+    -- Condition 2: Connection count exceeds 250
+    IF @ConnectionCount > @ThresholdHigh
+    BEGIN
+        SET @EmailSubject = 'Connection Alert: High Number of Connections in ' + @DatabaseName;
+        SET @EmailBody = 'The number of connections in database ' + @DatabaseName + ' has exceeded ' + CAST(@ThresholdHigh AS NVARCHAR(10)) + '. Current connection count: ' + CAST(@ConnectionCount AS NVARCHAR(10)) + '.';
+
+        -- Send email (assumes Database Mail is configured)
+        EXEC msdb.dbo.sp_send_dbmail
+            @profile_name = 'YourMailProfile',  -- Replace with your Database Mail profile name
+            @recipients = 'youremail@example.com',  -- Replace with your email address
+            @subject = @EmailSubject,
+            @body = @EmailBody;
+    END
+
+    -- Fetch the next database
+    FETCH NEXT FROM db_cursor INTO @DatabaseName
+END
+
+-- Step 6: Close and deallocate the cursor
+CLOSE db_cursor
+DEALLOCATE db_cursor
